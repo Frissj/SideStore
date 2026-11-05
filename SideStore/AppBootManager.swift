@@ -35,7 +35,7 @@ public final class AppBootManager {
     /// client-info overrides. We do the same once on boot so existing installs
     /// get the working -80046 fix without needing SideInstaller.
     private nonisolated func applySideInstallerAnisetteMigrationIfNeeded() {
-        let key = "AnisetteMacADI.sideInstallerParity.v1"
+        let key = "AnisetteMacADI.consistentIdentity.v2"
         guard !UserDefaults.standard.bool(forKey: key) else { return }
 
         let ud = UserDefaults.standard
@@ -46,19 +46,20 @@ public final class AppBootManager {
         // 2. Auto-rotation OFF
         ud.disableAnisetteRotation = true
 
-        // 3. Default server only if none is selected (don't lock out manual picks later)
-        if ud.menuAnisetteURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            ud.menuAnisetteURL = AppConstants.Anisette.Servers.defaultServerURL
-        }
+        // 3. Move the old Windows path to Mac ADI once; later manual picks persist.
+        ud.menuAnisetteURL = AppConstants.Anisette.Servers.defaultServerURL
+        ud.set(false, forKey: "anisetteServerAuto")
 
         // 4. Put client info saved for a Windows PC or Android phone back to defaults
         ud.customAnisetteClientInfo = nil
         ud.customAnisetteUserAgent = nil
         // Also clear any file-based overrides
         AnisetteConfigManager.shared.resetToDefaults()
+        SideSignConfigManager.shared.resetToDefaults()
 
         // 5. Fresh adi.pb so Apple issues a new Mac identity (asks for code once more)
         AnisetteConfigManager.shared.anisetteAdiBlob = nil
+        ud.removeObject(forKey: "SideSign.anisetteAdiBlob")
 
         ud.set(true, forKey: key)
         debugLog("[AppBootManager] Applied SideInstaller 1.6.1 anisette migration (Mac path, ODA off, rotation off, SideStore New, adi.pb purged)")

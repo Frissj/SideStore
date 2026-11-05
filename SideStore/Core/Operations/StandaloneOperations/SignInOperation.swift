@@ -137,10 +137,10 @@ final class SignInOperation: BaseStandaloneOperation<StandaloneOperationContext,
                 return (account, session)
             } catch {
                 self.debugLog("[SignInOperation] authenticationLoop: Attempt failed with error: \(error)")
-                // SideInstaller / PR#1660: purge Mac/desynced adi.pb on auth failures so next
-                // attempt provisions a fresh Windows identity matching client-info.
+                // Discard a rejected identity so the next attempt provisions fresh data.
                 let errorString = "\(error)".lowercased()
                 if errorString.contains("-80045")
+                    || errorString.contains("-80046")
                     || errorString.contains("-45061")
                     || errorString.contains("-22421")
                     || errorString.contains("-90010")
@@ -150,8 +150,10 @@ final class SignInOperation: BaseStandaloneOperation<StandaloneOperationContext,
                     || errorString.contains("too many requests")
                     || errorString.contains("503")
                     || errorString.contains("this action cannot be completed") {
-                    self.debugLog("[SignInOperation] Auth failure — purging adi.pb for fresh Windows provisioning")
+                    self.debugLog("[SignInOperation] Auth failure — purging adi.pb for fresh provisioning")
                     AnisetteConfigManager.shared.anisetteAdiBlob = nil
+                    UserDefaults.standard.removeObject(forKey: "SideSign.anisetteAdiBlob")
+                    await SideSign.AnisetteDataManager.shared.clearCache()
                 }
                 await handler.handleSignInResult(.failure(error))
             }

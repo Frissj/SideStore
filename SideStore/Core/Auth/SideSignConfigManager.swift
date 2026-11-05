@@ -12,33 +12,30 @@ import SideSign
 public actor SideSignConfigManager {
     public static let shared = SideSignConfigManager()
 
-    /// SideInstaller-style: Windows GSA UA (not Mac/Xcode). Required so
-    /// X-MMe-Client-Info (Windows) and User-Agent match on GrandSlam.
-    public nonisolated static func windowsAuthHeaders() -> SideSignHeaders {
+    /// Match the Mac ADI identity used by the default anisette server.
+    public nonisolated static func defaultAuthHeaders() -> SideSignHeaders {
         var h = SideSignHeaders()
         h.grandSlam = .init(
             service: "iCloud",
             headerVersion: "1.0.1",
             authApp: "com.apple.gs.xcode.auth",
-            userAgent: "akd/1.0 CFNetwork/808.1.4"
+            userAgent: AppConstants.Anisette.Servers.macUserAgent
         )
         h.appleAuth = .init(
             appIDKey: h.appleAuth.appIDKey,
-            userAgent: "akd/1.0 CFNetwork/808.1.4"
+            userAgent: AppConstants.Anisette.Servers.macUserAgent
         )
         return h
     }
 
-    /// Force Windows/akd UA on GrandSlam (SideInstaller base_headers)
+    /// Fill missing values without replacing the selected anisette identity.
     public nonisolated static func sanitizeForGrandSlam(_ config: SideSignHeaders) -> SideSignHeaders {
         var c = config
-        if c.grandSlam.userAgent.isEmpty || c.grandSlam.userAgent.contains("Macintosh")
-            || c.grandSlam.userAgent.contains("Xcode") || c.grandSlam.userAgent.contains("authKit") {
-            c.grandSlam.userAgent = "akd/1.0 CFNetwork/808.1.4"
+        if c.grandSlam.userAgent.isEmpty {
+            c.grandSlam.userAgent = AppConstants.Anisette.Servers.macUserAgent
         }
-        if c.appleAuth.userAgent.isEmpty || c.appleAuth.userAgent.contains("Macintosh")
-            || c.appleAuth.userAgent.contains("Mac OS") {
-            c.appleAuth.userAgent = "akd/1.0 CFNetwork/808.1.4"
+        if c.appleAuth.userAgent.isEmpty {
+            c.appleAuth.userAgent = AppConstants.Anisette.Servers.macUserAgent
         }
         return c
     }
@@ -55,7 +52,7 @@ public actor SideSignConfigManager {
             DeveloperPortal.shared.customHeaders = config
             return config
         }
-        let cfg = Self.windowsAuthHeaders()
+        let cfg = Self.defaultAuthHeaders()
         DeveloperPortal.shared.customHeaders = cfg
         return cfg
     }
@@ -66,7 +63,7 @@ public actor SideSignConfigManager {
             config = Self.sanitizeForGrandSlam(config)
             DeveloperPortal.shared.customHeaders = config
         } else {
-            DeveloperPortal.shared.customHeaders = Self.windowsAuthHeaders()
+            DeveloperPortal.shared.customHeaders = Self.defaultAuthHeaders()
         }
     }
 
@@ -95,7 +92,7 @@ public actor SideSignConfigManager {
     @discardableResult
     public nonisolated func resetToDefaults() -> SideSignHeaders {
         try? FileManager.default.removeItem(at: configFileURL)
-        let cfg = Self.windowsAuthHeaders()
+        let cfg = Self.defaultAuthHeaders()
         DeveloperPortal.shared.customHeaders = cfg
         return cfg
     }
