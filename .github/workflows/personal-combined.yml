@@ -1,0 +1,74 @@
+name: Personal LiveContainer + SideStore
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: maxim-lobanov/setup-xcode@v1.6.0
+        with:
+          xcode-version: '26.4'
+      - run: brew install ldid xcbeautify
+      - name: Build patched SideStore
+        run: |
+          set -euo pipefail
+          mkdir -p build/logs
+          make -B build 2>&1 | tee build/logs/build.log | xcbeautify --renderer github-actions
+          make fakesign ipa
+      - name: Bundle with official LiveContainer nightly
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p combined sidestore
+          gh release download nightly --repo LiveContainer/LiveContainer --pattern 'LiveContainer+SideStore.ipa' --dir combined
+          unzip -q combined/LiveContainer+SideStore.ipa -d combined
+          unzip -q SideStore.ipa -d sidestore
+          curl -fL --retry 3 https://github.com/LiveContainer/dylibify/releases/download/1.0/dylibify -o dylibify
+          chmod +x dylibify
+          app=combined/Payload/LiveContainer.app
+          framework="$app/Frameworks/SideStoreApp.framework"
+          cp "$framework/LCAppInfo.plist" combined/LCAppInfo.plist
+          rm -rf "$framework"
+          mv sidestore/Payload/SideStore.app "$framework"
+          ./dylibify "$framework/SideStore" "$framework/SideStore.dylib"
+          mv "$framework/SideStore.dylib" "$framework/SideStore"
+          ldid -S "$framework/SideStore"
+          cp combined/LCAppInfo.plist "$framework/LCAppInfo.plist"
+          cp "$framework/Intents.intentdefinition" "$app/"
+          cp "$framework/ViewApp.intentdefinition" "$app/"
+          rm -rf "$app/Metadata.appintents"
+          cp -R "$framework/Metadata.appintents" "$app/Metadata.appintents"
+          sed -i '' 's/9SideStore20RefreshAllAppsIntentV/16SideStoreSupport20RefreshAllAppsIntentV/g;s/9SideStore26RefreshAllAppsWidgetIntentV/16SideStoreSupport26RefreshAllAppsWidgetIntentV/g' "$app/Metadata.appintents/extract.actionsdata"
+          widget="$app/PlugIns/LiveWidgetExtension.appex"
+          ldid -e "$widget/LiveWidgetExtension" > combined/widget-entitlements.plist
+          rm -rf "$widget"
+          mv "$framework/PlugIns/AltWidgetExtension.appex" "$widget"
+          /usr/libexec/PlistBuddy -c 'Set :CFBundleIdentifier com.kdt.livecontainer.LiveWidget' "$widget/Info.plist"
+          /usr/libexec/PlistBuddy -c 'Set :CFBundleExecutable LiveWidgetExtension' "$widget/Info.plist"
+          mv "$widget/AltWidgetExtension" "$widget/LiveWidgetExtension"
+          ldid -Scombined/widget-entitlements.plist "$widget/LiveWidgetExtension"
+          find "$app" -type d -name _CodeSignature -prune -exec rm -rf {} +
+          cd combined
+          zip -qr ../LiveContainer+SideStore-login-fix.ipa Payload -x '._*' '*.DS_Store' '__MACOSX/*'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: LiveContainer-SideStore-login-fix
+          path: |
+            LiveContainer+SideStore-login-fix.ipa
+            SideStore.ipa
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: build-logs
+          path: build/logs
