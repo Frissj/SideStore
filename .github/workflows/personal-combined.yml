@@ -17,6 +17,8 @@ jobs:
       - uses: maxim-lobanov/setup-xcode@v1.6.0
         with:
           xcode-version: '26.4'
+      - name: Check combined pairing imports with synthetic records
+        run: bash scripts/ci/test_pairing_import.sh
       - name: Check outgoing Apple sign-in identities without network access
         run: swift test --package-path Dependencies/SideSign --filter AuthenticationIdentityTests
   build:
@@ -71,12 +73,12 @@ jobs:
           ldid -Scombined/widget-entitlements.plist "$widget/LiveWidgetExtension"
           find "$app" -type d -name _CodeSignature -prune -exec rm -rf {} +
           cd combined
-          zip -qr ../LiveContainer+SideStore-80046-fix.ipa Payload -x '._*' '*.DS_Store' '__MACOSX/*'
+          zip -qr ../LiveContainer+SideStore-auto-pairing.ipa Payload -x '._*' '*.DS_Store' '__MACOSX/*'
       - uses: actions/upload-artifact@v4
         with:
-          name: LiveContainer-SideStore-80046-fix
+          name: LiveContainer-SideStore-auto-pairing
           path: |
-            LiveContainer+SideStore-80046-fix.ipa
+            LiveContainer+SideStore-auto-pairing.ipa
             SideStore.ipa
           if-no-files-found: error
       - uses: actions/upload-artifact@v4

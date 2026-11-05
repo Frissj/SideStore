@@ -94,46 +94,30 @@ final class PairingFileManager: NSObject {
     }
     
     nonisolated func sanitizePairingFileFor(contents: String, pprotocol: PairingProtocol) -> String {
-        guard let plistData = contents.data(using: .utf8) else {
+        guard (try? PairingFileParser.parse(content: contents, preferred: pprotocol)) != nil,
+              let data = contents.data(using: .utf8),
+              let plist = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any] else {
             return contents
         }
-        guard let plist = try? PropertyListSerialization.propertyList(from: plistData, format: nil) as? [String : Sendable] else {
+
+        let remoteKeys: Set<String> = ["private_key", "public_key", "identifier", "alt_irk"]
+        let lockdownKeys: Set<String> = [
+            "WiFiMACAddress", "SystemBUID", "RootPrivateKey", "HostPrivateKey", "HostID",
+            "RootCertificate", "UDID", "EscrowBag", "HostCertificate", "DeviceCertificate"
+        ]
+        let excludedKeys: Set<String>
+        switch pprotocol {
+        case .rppairing: excludedKeys = lockdownKeys
+        case .lockdown: excludedKeys = remoteKeys
+        case .unknown: return contents
+        }
+        // Preserve optional protocol metadata, including Remote Pairing's alt_irk.
+        let record = plist.filter { !excludedKeys.contains($0.key) }
+        guard let sanitized = try? PropertyListSerialization.data(fromPropertyList: record, format: .xml, options: 0),
+              let result = String(data: sanitized, encoding: .utf8) else {
             return contents
         }
-        
-        let requiredKeys: [String]
-        if pprotocol == .rppairing {
-            requiredKeys = [
-                "private_key",
-                "public_key",
-                "identifier"
-            ]
-        } else if pprotocol == .rppairing {
-            requiredKeys = [
-                "WiFiMACAddress",
-                "SystemBUID",
-                "RootPrivateKey",
-                "HostPrivateKey",
-                "HostID",
-                "RootCertificate",
-                "UDID",
-                "EscrowBag",
-                "HostCertificate",
-                "DeviceCertificate"
-            ]
-        } else {
-            return contents
-        }
-        
-        if !(requiredKeys.filter { plist[$0] == nil }.isEmpty) {
-            return contents
-        }
-    
-        var ansDict : [String : Sendable] = [:]
-        for key in requiredKeys {
-            ansDict[key] = plist[key]
-        }
-        return String(data: try! PropertyListSerialization.data(fromPropertyList: ansDict, format: .xml, options: 0), encoding: .utf8)!
+        return result
     }
 
     nonisolated func fetchPairingFile(preferred: PairingProtocol? = nil) -> String? {
@@ -163,24 +147,51 @@ final class PairingFileManager: NSObject {
     
     @discardableResult
     nonisolated func parse(content: String, preferred: PairingProtocol? = nil) throws -> any PairingFile {
-        try PairingFileParser.parse(content: content, preferred: preferred)
+        do {
+            return try PairingFileParser.parse(content: content, preferred: preferred)
+        } catch PairingError.ambiguous(_) {
+            let saved = preferredProtocol
+            let fallback: PairingProtocol
+            if #available(iOS 17, tvOS 17, *) {
+                fallback = .rppairing
+            } else {
+                fallback = .lockdown
+            }
+            let selected: PairingProtocol
+            if let saved, saved == .rppairing || saved == .lockdown {
+                selected = saved
+            } else {
+                selected = fallback
+            }
+            return try PairingFileParser.parse(content: content, preferred: selected)
+        }
     }
 
     @discardableResult
     func savePairingFile(contents: String, preferred: PairingProtocol? = nil) throws -> any PairingFile {
         let parsed = try parse(content: contents, preferred: preferred)
-        let destinationURL = pairingFileURL(for: parsed.mode)
-        let fm = FileManager.default
-        if fm.fileExists(atPath: destinationURL.path) {
-            try? fm.removeItem(at: destinationURL)
+        let hasRemote = (try? PairingFileParser.parse(content: contents, preferred: .rppairing)) != nil
+        let hasLockdown = (try? PairingFileParser.parse(content: contents, preferred: .lockdown)) != nil
+        let modes: [PairingProtocol] = hasRemote && hasLockdown ? [.rppairing, .lockdown] : [parsed.mode]
+        // Validate every split record before replacing any existing file.
+        let records = try modes.map { mode in
+            let record = sanitizePairingFileFor(contents: contents, pprotocol: mode)
+            _ = try PairingFileParser.parse(content: record)
+            return (mode, record)
         }
-        try contents.write(to: destinationURL, atomically: true, encoding: .utf8)
-        debugLog("[PairingFile] Saved \(parsed.mode.rawValue) pairing file to: \(destinationURL.path)")
+        for (mode, record) in records {
+            let destinationURL = pairingFileURL(for: mode)
+            try record.write(to: destinationURL, atomically: true, encoding: .utf8)
+            debugLog("[PairingFile] Saved \(mode.rawValue) pairing file.")
+        }
+        if hasRemote && hasLockdown || preferredProtocol == nil || preferredProtocol == .unknown {
+            preferredProtocol = parsed.mode
+        }
         UserDefaults.standard.isPairingReset = false
         return parsed
     }
 
-    func inspectPairingFile(from url: URL) throws -> (content: String, file: any PairingFile) {
+    func inspectPairingFile(from url: URL, preferred: PairingProtocol? = nil) throws -> (content: String, file: any PairingFile) {
         let isSecured = url.startAccessingSecurityScopedResource()
         defer {
             if isSecured {
@@ -188,10 +199,17 @@ final class PairingFileManager: NSObject {
             }
         }
         let data = try Data(contentsOf: url)
-        guard let content = String(data: data, encoding: .utf8) ?? String(data: data, encoding: .isoLatin1) else {
+        let plist = try PropertyListSerialization.propertyList(from: data, format: nil)
+        let xml = try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0)
+        guard let content = String(data: xml, encoding: .utf8) else {
             throw CocoaError(.fileReadInapplicableStringEncoding)
         }
-        let parsed = try parse(content: content, preferred: nil)
+        let parsed: any PairingFile
+        do {
+            parsed = try PairingFileParser.parse(content: content)
+        } catch PairingError.ambiguous(_) {
+            parsed = try parse(content: content, preferred: preferred)
+        }
         return (content, parsed)
     }
 
